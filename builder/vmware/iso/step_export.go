@@ -6,7 +6,6 @@ import (
 	"github.com/mitchellh/multistep"
 	"github.com/mitchellh/packer/packer"
 	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
@@ -30,14 +29,12 @@ func (s *StepExport) Run(state multistep.StateBag) multistep.StepAction {
 	}
 
 	// Export the VM
-	outputPath := filepath.Join(c.VMName, c.VMName+"."+s.Format)
-
 	args := []string{
 		"--noSSLVerify=true",
 		"--skipManifestCheck",
 		"-tt=" + s.Format,
 		"vi://" + c.RemoteUser + ":" + c.RemotePassword + "@" + c.RemoteHost + "/" + c.VMName,
-		outputPath,
+		c.OutputDir,
 	}
 
 	ui.Say("Exporting virtual machine...")
@@ -54,7 +51,7 @@ func (s *StepExport) Run(state multistep.StateBag) multistep.StepAction {
 
 	ui.Message(fmt.Sprintf("%s", out.String()))
 
-	state.Put("exportPath", outputPath)
+	state.Put("exportPath", c.OutputDir)
 
 	return multistep.ActionContinue
 }

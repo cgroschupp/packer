@@ -9,6 +9,11 @@ import (
 	"net/url"
 	"os/exec"
 	"strings"
+	"github.com/vmware/govmomi"
+	"github.com/vmware/govmomi/find"
+	"github.com/vmware/govmomi/vim25/types"
+	"github.com/vmware/govmomi/vim25/methods"
+	"strconv"
 )
 
 var builtins = map[string]string{
@@ -31,6 +36,9 @@ type Config struct {
 	VMFolder     string `mapstructure:"vm_folder"`
 	VMName       string `mapstructure:"vm_name"`
 	VMNetwork    string `mapstructure:"vm_network"`
+	OVFParameter [][]string `mapstructure:"ovf_parameter"`
+	SetOVF       bool   `mapstructure:"set_ovf"`
+	MarkAsTpl    bool   `mapstructure:"mark_as_template"`
 
 	tpl *packer.ConfigTemplate
 }
@@ -96,6 +104,17 @@ func (p *PostProcessor) Configure(raws ...interface{}) error {
 		}
 	}
 
+	if p.config.OVFParameter == nil {
+		p.config.OVFParameter = make([][]string,0)
+	}
+
+	for key, args := range p.config.OVFParameter {
+		if len(args) != 7 {
+			errs = packer.MultiErrorAppend(
+        errs, fmt.Errorf("Error processing OVFParameter %s: %s", key, args))
+		}
+	}
+
 	if len(errs.Errors) > 0 {
 		return errs
 	}
@@ -145,6 +164,79 @@ func (p *PostProcessor) PostProcess(ui packer.Ui, artifact packer.Artifact) (pac
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
 		return nil, false, fmt.Errorf("Failed: %s\nStdout: %s", err, out.String())
+	}
+
+	if p.config.SetOVF || p.config.MarkAsTpl {
+		u,err := url.Parse(fmt.Sprintf("https://%s:%s@%s/sdk",p.config.Username,p.config.Password,p.config.Host))
+		if err != nil {
+			return nil, false, fmt.Errorf("Failed: %s", err)
+		}
+		c,err := govmomi.NewClient(*u,p.config.Insecure)
+		if err != nil {
+			return nil, false, fmt.Errorf("Failed: %s", err)
+		}
+		finder := find.NewFinder(c,false)
+		dc,err := finder.Datacenter(p.config.Datacenter)
+		if err != nil {
+			return nil, false, fmt.Errorf("Datacenter %s not found: %s",p.config.Datacenter,err)
+		}
+		finder.SetDatacenter(dc)
+		//FIXME: Path join
+		vm,err := finder.VirtualMachine(fmt.Sprintf("%s/%s",p.config.VMFolder,p.config.VMName))
+		if err != nil {
+			return nil, false, fmt.Errorf("Failed: %s", err)
+		}
+
+		if p.config.SetOVF {
+			if len(p.config.OVFParameter) > 0 {
+				spec := types.VirtualMachineConfigSpec{}
+				vmconfigspec := types.VmConfigSpec{}
+				base := types.BaseVmConfigSpec.GetVmConfigSpec(&vmconfigspec)
+				base.OvfEnvironmentTransport = []string{"com.vmware.guestInfo"}
+				spec.VAppConfig = base
+
+				for _,value := range p.config.OVFParameter {
+					vapppropspec := types.VAppPropertySpec{}
+					vapppropspec.Operation = types.ArrayUpdateOperationAdd
+					vapppropinfo := types.VAppPropertyInfo{}
+					key,err := strconv.ParseInt(value[0],10,0)
+					if err != nil {
+						return nil, false, fmt.Errorf("Failed: %s", err)
+					}
+					vapppropinfo.Key = int(key)
+					vapppropinfo.ClassId = value[1]
+					vapppropinfo.Id = value[2]
+					vapppropinfo.Label = value[3]
+					vapppropinfo.Type = value[4]
+					if value[5] == "true" {
+						vapppropinfo.UserConfigurable = true
+					} else {
+						vapppropinfo.UserConfigurable = false
+					}
+					vapppropinfo.DefaultValue = value[6]
+					vapppropspec.Info = &vapppropinfo
+					vmconfigspec.Property = append(vmconfigspec.Property,vapppropspec)
+				}
+
+				task, err := vm.Reconfigure(spec)
+				if err != nil {
+					return nil, false, fmt.Errorf("Failed: %s", err)
+				}
+
+				task.Wait()
+			} else {
+				//FIXME: Warning
+			}
+		}
+		if p.config.MarkAsTpl {
+			req := types.MarkAsTemplate{
+				This: vm.Reference(),
+			}
+			_, err := methods.MarkAsTemplate(c, &req)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
 	}
 
 	ui.Message(fmt.Sprintf("%s", out.String()))

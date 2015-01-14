@@ -51,6 +51,8 @@ func (s StepCleanVMX) Run(state multistep.StateBag) multistep.StepAction {
 
 		ui.Message("Detaching ISO from CD-ROM device...")
 
+		vmxData[ide+"clientDevice"] = "TRUE"
+		vmxData[ide+"startConnected"] = "FALSE"
 		vmxData[ide+"devicetype"] = "cdrom-raw"
 		vmxData[ide+"filename"] = "auto detect"
 	}
